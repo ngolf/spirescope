@@ -57,6 +57,16 @@ _compare_js_path = STATIC_DIR / "compare.js"
 _COMPARE_JS_HASH = hashlib.md5(_compare_js_path.read_bytes(), usedforsecurity=False).hexdigest()[:8] if _compare_js_path.exists() else "0"
 _live_js_path = STATIC_DIR / "live.js"
 _LIVE_JS_HASH = hashlib.md5(_live_js_path.read_bytes(), usedforsecurity=False).hexdigest()[:8] if _live_js_path.exists() else "0"
+_nav_js_path = STATIC_DIR / "nav.js"
+_NAV_JS_HASH = hashlib.md5(_nav_js_path.read_bytes(), usedforsecurity=False).hexdigest()[:8] if _nav_js_path.exists() else "0"
+_overlay_js_path = STATIC_DIR / "overlay.js"
+_OVERLAY_JS_HASH = hashlib.md5(_overlay_js_path.read_bytes(), usedforsecurity=False).hexdigest()[:8] if _overlay_js_path.exists() else "0"
+_swagger_css_path = STATIC_DIR / "swagger/swagger-ui.css"
+_SWAGGER_CSS_HASH = hashlib.md5(_swagger_css_path.read_bytes(), usedforsecurity=False).hexdigest()[:8] if _swagger_css_path.exists() else "0"
+_swagger_js_path = STATIC_DIR / "swagger/swagger-ui-bundle.js"
+_SWAGGER_JS_HASH = hashlib.md5(_swagger_js_path.read_bytes(), usedforsecurity=False).hexdigest()[:8] if _swagger_js_path.exists() else "0"
+_swagger_init_path = STATIC_DIR / "swagger/init.js"
+_SWAGGER_INIT_HASH = hashlib.md5(_swagger_init_path.read_bytes(), usedforsecurity=False).hexdigest()[:8] if _swagger_init_path.exists() else "0"
 
 
 @contextlib.asynccontextmanager
@@ -139,6 +149,11 @@ templates.env.globals["collections_js_hash"] = _COLLECTIONS_JS_HASH
 templates.env.globals["shortcuts_js_hash"] = _SHORTCUTS_JS_HASH
 templates.env.globals["compare_js_hash"] = _COMPARE_JS_HASH
 templates.env.globals["live_js_hash"] = _LIVE_JS_HASH
+templates.env.globals["nav_js_hash"] = _NAV_JS_HASH
+templates.env.globals["overlay_js_hash"] = _OVERLAY_JS_HASH
+templates.env.globals["swagger_css_hash"] = _SWAGGER_CSS_HASH
+templates.env.globals["swagger_js_hash"] = _SWAGGER_JS_HASH
+templates.env.globals["swagger_init_hash"] = _SWAGGER_INIT_HASH
 
 # Repair a half-finished data swap FIRST. A process killed between the
 # live->backup and staging->live renames leaves no live dataset, and every
@@ -192,12 +207,18 @@ def tokens_equal(provided: str, expected: str) -> bool:
     compare_digest raises TypeError on non-ASCII str, and every caller here
     feeds it a request header. That turned a 403 into a 500, and in the
     rate-limit middleware it raised before the request was recorded, so a peer
-    could stay unthrottled by sending a non-ASCII key. A non-ASCII token can
-    never equal these hex/ASCII secrets, so rejecting it early is equivalent.
+    could stay unthrottled by sending a non-ASCII key. Rejecting a non-ASCII
+    provided value was not enough: the expected side is whatever the operator
+    put in STS2_AUTH_TOKEN, SPIRESCOPE_ADMIN_TOKEN or SPIRESCOPE_API_KEY, and
+    a non-ASCII one made every request on a network bind a 500. Both sides are
+    therefore compared as UTF-8 bytes. surrogatepass keeps an environment
+    value with undecodable bytes (POSIX decodes those to lone surrogates) from
+    raising during the encode.
     """
-    if not provided or not provided.isascii():
+    if not provided:
         return False
-    return secrets.compare_digest(provided, expected)
+    return secrets.compare_digest(provided.encode("utf-8", "surrogatepass"),
+                                  expected.encode("utf-8", "surrogatepass"))
 
 
 def validate_csrf_token(token: str) -> bool:
@@ -750,7 +771,14 @@ async def global_error_handler(request: Request, exc: Exception):
 # ---------------------------------------------------------------------------
 
 _save_watcher_last_mtime: float = 0
+# Two signals, kept apart on purpose. The watchdog handler sets the first and
+# only the save watcher waits on it: it means "reload everything from disk".
+# The second is the broadcast live streams wait on: it means "something a live
+# view shows may have changed". The game log changes every few seconds in
+# combat, and when both shared one event every log line looked like a save
+# change and rebuilt the knowledge base and re-read every run file.
 _save_changed_event = asyncio.Event()
+_live_data_event = asyncio.Event()
 
 
 async def _prewarm_caches():
@@ -852,14 +880,22 @@ async def _watch_saves():
                     changed = True
                 except asyncio.TimeoutError:
                     changed = False
+                if changed:
+                    # Live streams read current_run.save straight from disk,
+                    # not from the caches rebuilt below, and used to wake on
+                    # the watchdog signal itself; wake them now so the reload
+                    # does not add to their latency.
+                    _live_data_event.set()
+                    await asyncio.sleep(0)
+                    _live_data_event.clear()
 
             if changed:
                 await _refresh_data()
                 # Signal SSE consumers that fresh data is available.
                 # They use wait_for with timeout, so a brief set/clear is enough.
-                _save_changed_event.set()
+                _live_data_event.set()
                 await asyncio.sleep(0)  # Let SSE coroutines wake
-                _save_changed_event.clear()
+                _live_data_event.clear()
         except Exception:
             log.debug("Save watcher error", exc_info=True)
 
@@ -901,9 +937,11 @@ async def _poll_game_log_once() -> None:
                 changed = True
 
             if changed:
-                _save_changed_event.set()
+                # Wake live streams only: a log change is not a save change,
+                # and the save watcher must not reload data for it.
+                _live_data_event.set()
                 await asyncio.sleep(0)
-                _save_changed_event.clear()
+                _live_data_event.clear()
         except Exception:
             log.debug("Log tailer error", exc_info=True)
 

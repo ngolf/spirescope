@@ -15,7 +15,9 @@
       var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
       var next = isDark ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', next);
-      localStorage.setItem('theme', next);
+      // Without storage the choice still applies to this page; it is just
+      // not remembered.
+      try { localStorage.setItem('theme', next); } catch (e) { /* storage unavailable */ }
       tb.textContent = next === 'light' ? '\u2600' : '\u263E';
       tb.setAttribute('aria-label', next === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
       var mc = document.querySelector('meta[name="theme-color"]');
@@ -42,7 +44,14 @@
           document.body.innerHTML =
             '<h1 class="shutdown-msg">SpireScope stopped. You can close this tab.</h1>';
         } else {
-          window.alert('Could not stop SpireScope (HTTP ' + response.status + ').');
+          // The server explains a refusal (for example a data update still
+          // installing) in a JSON error; show that rather than a bare status.
+          response.json().then(function(body) {
+            var reason = body && body.error ? body.error : 'HTTP ' + response.status;
+            window.alert('Could not stop SpireScope: ' + reason);
+          }, function() {
+            window.alert('Could not stop SpireScope (HTTP ' + response.status + ').');
+          });
         }
       }).catch(function() {
         // True network error — leave the page intact so the user can retry.
@@ -61,13 +70,33 @@
   // Copy seed button
   var cs = document.querySelector('.copy-seed');
   if (cs) {
+    var flash = function(text) {
+      cs.textContent = text;
+      setTimeout(function() { cs.textContent = 'Copy'; }, 1500);
+    };
+    // navigator.clipboard only exists on secure origins, so a LAN visit over
+    // plain http has none, and a browser may also refuse the write. Select
+    // the seed instead and try the older copy command; if that fails too,
+    // the selection is left for the user to copy.
+    var fallback = function() {
+      var text = document.getElementById('seed-text');
+      var copied = false;
+      if (text && window.getSelection && document.createRange) {
+        var range = document.createRange();
+        range.selectNodeContents(text);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        try { copied = document.execCommand('copy'); } catch (e) { copied = false; }
+      }
+      flash(copied ? 'Copied!' : 'Seed selected');
+    };
     cs.addEventListener('click', function() {
       var seed = cs.getAttribute('data-seed');
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(seed).then(function() {
-          cs.textContent = 'Copied!';
-          setTimeout(function() { cs.textContent = 'Copy'; }, 1500);
-        });
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(seed).then(function() { flash('Copied!'); }, fallback);
+      } else {
+        fallback();
       }
     });
   }

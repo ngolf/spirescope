@@ -527,7 +527,12 @@ async def index(request: Request):
 @router.get("/search", response_class=HTMLResponse)
 async def search(request: Request, q: str = Query("", max_length=200)):
     a = _app()
-    results = a.kb.search(q)
+    # A query with no match falls through to the pure-Python edit-distance
+    # suggester over every entity name: CPU work that held the event loop,
+    # and every live stream with it, for tens of milliseconds a request. The
+    # KnowledgeBase is never mutated after it is built (reloads swap in a new
+    # one), so reading it from a thread is safe.
+    results = await asyncio.to_thread(a.kb.search, q)
     total = sum(len(v) for k, v in results.items() if k != "suggestions")
     return a.templates.TemplateResponse(request, "search.html", {
         "query": q, "results": results, "total": total, "kb": a.kb,
@@ -1067,6 +1072,8 @@ async def export_run(run_id: str = Path(max_length=200)):
 
 @router.get("/runs/{run_id}/export/html")
 async def export_run_html(run_id: str = Path(max_length=200)):
+    from markupsafe import Markup
+
     from sts2.analytics import analyze_run
     from sts2.config import STATIC_DIR, VERSION
     a = _app()
@@ -1076,9 +1083,16 @@ async def export_run_html(run_id: str = Path(max_length=200)):
     run_analysis = analyze_run(run, kb=a.kb)
     css_path = STATIC_DIR / "style.css"
     css_content = css_path.read_text(encoding="utf-8") if css_path.exists() else ""
+    # The stylesheet is the app's own static file, never user input, so it is
+    # inlined as trusted markup. Autoescaped, its quotes and ">" became
+    # entities, which browsers do not decode inside <style>, and the fonts,
+    # child selectors and light-theme rules dropped out of every export.
+    # A literal "</style" would still end the element early; "<\/" is the
+    # same text to CSS (in a string or comment) but not to the HTML parser.
+    css_content = re.sub(r"</(style)", r"<\\/\1", css_content, flags=re.IGNORECASE)
     html = a.templates.env.get_template("run_export.html").render(
         run=run, kb=a.kb, run_analysis=run_analysis,
-        css_content=css_content, version=VERSION,
+        css_content=Markup(css_content), version=VERSION,
     )
     safe_id = re.sub(r'[^\w\-.]', '_', run.id)
     return HTMLResponse(
@@ -1507,7 +1521,12 @@ async def epochs_page(request: Request, category: str = Query(None, max_length=5
         ts = state_data.get("obtain_date", 0)
         date_str = ""
         if ts > 0:
-            date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%b %d, %Y")
+            try:
+                date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%b %d, %Y")
+            except (OverflowError, OSError, ValueError):
+                # A timestamp past what the platform can represent (OSError on
+                # Windows, OverflowError elsewhere) shows as no date, not a 500.
+                date_str = ""
         epochs_with_state.append({
             "epoch": ep,
             "state": state_data.get("state", "not_obtained"),
@@ -1755,7 +1774,9 @@ async def deck_analyzer(request: Request,
     game_version = a.kb.game_version
     if from_run:
         if from_run == "live":
-            live_run = await _get_live_run(0)
+            # The local player, as /live and the overlay show: seat 0 is the
+            # host, which in co-op is often the teammate.
+            live_run = await _get_live_run()
             if live_run.active and live_run.deck:
                 instances = instances_from_run(live_run)[:_MAX_DECK_SIZE]
                 selected_ids = live_run.deck[:_MAX_DECK_SIZE]
@@ -2006,7 +2027,7 @@ async def live_stream(request: Request, player: int = Query(None, ge=0, le=3)):
                 # Wake instantly on file change, or poll every 3s as fallback
                 try:
                     a = _app()
-                    await asyncio.wait_for(a._save_changed_event.wait(), timeout=3.0)
+                    await asyncio.wait_for(a._live_data_event.wait(), timeout=3.0)
                 except asyncio.TimeoutError:
                     pass
         finally:
@@ -2045,6 +2066,31 @@ async def reload_data(request: Request):
             "potions": len(a.kb.potions), "enemies": len(a.kb.enemies)}
 
 
+import threading
+
+_server_exit_requested = False
+_server_exit_lock = threading.Lock()
+
+
+def _request_server_exit() -> None:
+    """Ask the server to stop the way Ctrl+C in its console window does.
+
+    `python -m sts2` runs uvicorn in the main thread, and uvicorn handles
+    SIGINT by finishing in-flight requests and then running the lifespan
+    cleanup. os.kill(pid, SIGTERM) did that on POSIX only: on Windows it is
+    TerminateProcess, so the process died without any cleanup. uvicorn treats
+    a second SIGINT as "quit now" and skips the cleanup, so it is raised once
+    however many stop requests arrive.
+    """
+    global _server_exit_requested
+    with _server_exit_lock:
+        if _server_exit_requested:
+            return
+        _server_exit_requested = True
+    import signal
+    signal.raise_signal(signal.SIGINT)
+
+
 @router.post("/shutdown")
 async def shutdown(request: Request):
     """Gracefully stop SpireScope. Requires admin token, or a loopback client
@@ -2061,10 +2107,15 @@ async def shutdown(request: Request):
         csrf = request.headers.get("X-CSRF-Token", "")
         if not _is_loopback_client(request) or not a.validate_csrf_token(csrf):
             return PlainTextResponse("Unauthorized.", status_code=403)
-    import os
-    import signal
-    import threading
-    threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+    from sts2.updater import data_install_in_progress
+    if data_install_in_progress():
+        # Refused rather than queued: an install cut off part-way leaves the
+        # update lock and a staging directory behind, and the next install is
+        # refused until that lock goes stale.
+        return _api_error("A game data update is being installed. Stop Spirescope "
+                          "again once it has finished.", 409)
+    # The delay lets this response reach the browser before the server stops.
+    threading.Timer(0.5, _request_server_exit).start()
     return {"status": "shutting down"}
 
 
@@ -2154,7 +2205,8 @@ async def api_export_runs_csv(character: str = Query(None, max_length=50),
 @router.get("/api/search")
 async def api_search(q: str = Query("", max_length=200)):
     a = _app()
-    results = a.kb.search(q)
+    # Off the event loop for the same reason as the /search page.
+    results = await asyncio.to_thread(a.kb.search, q)
     return {
         "query": q,
         "cards": [c.model_dump() for c in results["cards"]],
@@ -2197,6 +2249,7 @@ async def api_reset_stats(request: Request):
 async def api_import_stats(request: Request, file: UploadFile = File(...),
                            csrf_token: str = Form("")):
     from sts2.aggregate import (
+        IMPORT_REJECTIONS,
         AggregateImportError,
         DuplicateImportError,
         import_aggregate,
@@ -2218,11 +2271,13 @@ async def api_import_stats(request: Request, file: UploadFile = File(...),
         return _api_error("Invalid JSON.", 400)
     try:
         merged = await asyncio.to_thread(import_aggregate, imported)
-    except DuplicateImportError as exc:
-        return _api_error(str(exc), 409)
+    except DuplicateImportError:
+        return _api_error(IMPORT_REJECTIONS["duplicate"], 409)
     except AggregateImportError as exc:
-        # Fixed text from the sanitiser, never payload — safe to return.
-        return _api_error(str(exc), 400)
+        # The text comes from the fixed table, looked up by the reason the
+        # sanitiser named, so nothing from the exception object itself can
+        # reach the response.
+        return _api_error(IMPORT_REJECTIONS.get(exc.reason, "Invalid aggregate file."), 400)
     except ValueError:
         # Includes Infinity/NaN counters: json.loads accepts them, the
         # sanitiser rejects them, and this used to surface as a 500. The
@@ -2265,7 +2320,17 @@ async def admin_patches_assign(request: Request,
             "error_code": 403,
             "error_message": "Invalid form submission. Please go back and try again.",
         }, status_code=403)
-    if not patch_manifest.assign_build(build_id.strip(), patch.strip()):
+    try:
+        # A file write: kept off the event loop.
+        assigned = await asyncio.to_thread(patch_manifest.assign_build,
+                                           build_id.strip(), patch.strip())
+    except OSError:
+        return a.templates.TemplateResponse(request, "error.html", {
+            "error_code": 503,
+            "error_message": "Could not save the assignment: the Spirescope state "
+                             "folder is not writable.",
+        }, status_code=503)
+    if not assigned:
         return a.templates.TemplateResponse(request, "error.html", {
             "error_code": 400,
             "error_message": "Unknown patch or empty build id.",

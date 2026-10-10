@@ -3,51 +3,17 @@
 The heavy lifting (template alignment, rendering) is exercised against a
 real install in test_localize_against_real_game, which skips when the game
 is absent — CI has no game, so the archive reader and the failure paths are
-covered with a synthetic .pck built here.
+covered with a synthetic .pck built by tests/_pck_builder.py.
 """
 import json
+import os
 import struct
+from pathlib import Path
 
 import pytest
 
 from sts2 import localize
-
-# magic + pack version + engine version + (flags, file base) + dir offset
-_HEADER_SIZE = 4 + 4 + 12 + 12 + 8
-
-
-def _build_pck(tmp_path, files, *, magic=b"GDPC", rel_base=False):
-    """Write a minimal Godot .pck containing `files` ({path: bytes}).
-
-    With rel_base the archive stores offsets relative to a declared file
-    base (the flag Godot sets for embedded packs); without it they are
-    absolute file offsets.
-    """
-    entries, blob = [], bytearray()
-    for path, payload in files.items():
-        stored = len(blob) if rel_base else _HEADER_SIZE + len(blob)
-        entries.append((path, stored, len(payload)))
-        blob += payload
-    index = bytearray()
-    index += struct.pack("<I", len(entries))
-    for path, offset, size in entries:
-        raw = path.encode("utf-8")
-        pad = (-len(raw)) % 4                      # Godot pads paths to 4 bytes
-        index += struct.pack("<I", len(raw) + pad) + raw + b"\x00" * pad
-        index += struct.pack("<2Q", offset, size)
-        index += b"\x00" * 16                      # md5
-        index += struct.pack("<I", 0)              # flags: not encrypted
-    header = bytearray()
-    header += magic
-    header += struct.pack("<I", 2)                 # pack format version
-    header += struct.pack("<3I", 4, 5, 1)          # engine version
-    header += struct.pack("<IQ", 2 if rel_base else 0,
-                          _HEADER_SIZE if rel_base else 0)
-    header += struct.pack("<Q", _HEADER_SIZE + len(blob))  # directory offset
-    assert len(header) == _HEADER_SIZE
-    pck = tmp_path / "SlayTheSpire2.pck"
-    pck.write_bytes(bytes(header) + bytes(blob) + bytes(index))
-    return tmp_path
+from tests._pck_builder import _HEADER_SIZE, _build_pck
 
 
 def _loc(payload):
@@ -177,8 +143,28 @@ def test_unknown_language_lists_what_is_available(tmp_path, monkeypatch):
     assert "klingon" in str(exc.value) and "ja" in str(exc.value)
 
 
+def _real_game_dir() -> Path:
+    """The install this machine actually has. conftest points STS2_GAME_DIR at
+    an empty directory for every other test and keeps the original setting in
+    SPIRESCOPE_TEST_REAL_GAME_DIR; with neither set, detect it as the app does."""
+    from sts2.config import _find_game_dir
+
+    explicit = os.environ.get("SPIRESCOPE_TEST_REAL_GAME_DIR")
+    if explicit and explicit != "detect":
+        return Path(explicit)
+    hidden = os.environ.pop("STS2_GAME_DIR", None)
+    try:
+        return _find_game_dir()
+    finally:
+        if hidden is not None:
+            os.environ["STS2_GAME_DIR"] = hidden
+
+
+_REAL_GAME_DIR = _real_game_dir()
+
+
 @pytest.mark.skipif(
-    not (localize.GAME_INSTALL_DIR / "SlayTheSpire2.pck").exists(),
+    not (_REAL_GAME_DIR / "SlayTheSpire2.pck").exists(),
     reason="Slay the Spire 2 is not installed on this machine")
 def test_localize_against_real_game(tmp_path, monkeypatch):
     """End to end against a real install: the overlay must be loadable, carry
@@ -186,11 +172,11 @@ def test_localize_against_real_game(tmp_path, monkeypatch):
     import re
 
     monkeypatch.setattr(localize, "OUT", tmp_path / "content")
-    langs = localize.available_languages()
+    langs = localize.available_languages(_REAL_GAME_DIR)
     assert langs, "install exposes no translatable languages"
     target = "ja" if "ja" in langs else langs[0]
 
-    written = localize.run(langs=[target])
+    written = localize.run(langs=[target], game_dir=_REAL_GAME_DIR)
     assert [p.name for p in written] == [f"{target}.json"]
 
     data = json.loads(written[0].read_text(encoding="utf-8"))

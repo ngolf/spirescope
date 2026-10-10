@@ -1,11 +1,12 @@
-"""The Prophecy Engine — pre-run predictions based on historical data."""
+"""The Prophecy Engine — historical estimates from recorded runs, shown before a run."""
 
 
 def generate_prophecy(character, ascension, runs):
-    """Predict outcome before starting a run.
+    """Summarise recorded runs comparable to the one about to start.
 
-    Uses historical runs with the same character at similar ascension
-    to estimate win probability, danger zones, and recommendations.
+    Uses historical runs with the same character within two ascension levels
+    to report the observed win rate, danger zones and recommendations. These
+    are descriptions of past runs, not a prediction of the next one.
     """
     comparable = [
         r for r in runs
