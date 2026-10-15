@@ -1,6 +1,6 @@
 """Cards gained outside a reward screen still appear in floor history."""
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -45,6 +45,13 @@ def card_save():
                 "bought_colorless": ["CARD.ETERNAL_ARMOR"],
                 "cards_gained": [{"id": "CARD.ETERNAL_ARMOR"}],
             }],
+        }, {
+            "map_point_type": "rest_site",
+            "player_stats": [{
+                "player_id": 1,
+                "rest_site_choices": ["SMITH"],
+                "upgraded_cards": ["CARD.ETERNAL_ARMOR", "", None],
+            }],
         }]],
     }
 
@@ -59,9 +66,54 @@ def test_parser_records_cards_gained_without_a_choice(tmp_path, card_save, live)
     with patch("sts2.saves.SAVE_DIR", tmp_path):
         run = get_current_run() if live else get_run_history()[0]
     assert [f.cards_picked for f in run.floors] == [
-        ["CARD.THRUMMING_HATCHET"], ["CARD.BLUR", "CARD.BLUR"], ["CARD.ETERNAL_ARMOR"],
+        ["CARD.THRUMMING_HATCHET"], ["CARD.BLUR", "CARD.BLUR"], ["CARD.ETERNAL_ARMOR"], [],
     ]
     assert run.floors[2].card_picked == "CARD.ETERNAL_ARMOR"
+    assert [f.cards_upgraded for f in run.floors] == [[], [], [], ["CARD.ETERNAL_ARMOR"]]
+
+
+def test_old_exports_have_no_upgrades():
+    assert RunFloor(floor=1).cards_upgraded == []
+
+
+async def test_upgrades_render_in_run_views_and_exports(client):
+    import sts2.app
+
+    run = RunHistory(
+        id="upgrade-history", character="Silent", win=True,
+        deck=["CARD.ETERNAL_ARMOR"],
+        floors=[RunFloor(floor=1, type="rest_site", current_hp=50, max_hp=70,
+                         cards_upgraded=["CARD.ETERNAL_ARMOR"])],
+    )
+    name = sts2.app.kb.id_to_name("CARD.ETERNAL_ARMOR")
+    with patch("sts2.app._get_run_by_id", new=AsyncMock(return_value=run)):
+        page = await client.get(f"/runs/{run.id}")
+        exported = await client.get(f"/runs/{run.id}/export")
+        html_export = await client.get(f"/runs/{run.id}/export/html")
+    assert page.status_code == exported.status_code == html_export.status_code == 200
+    timeline = page.text.split("<h2>Run Timeline</h2>")[1].split("<h2>Floor by Floor</h2>")[0]
+    floors = page.text.split("<h2>Floor by Floor</h2>")[1]
+    assert f"upgraded {name}" in timeline
+    assert f"Upgraded: {name}" in floors
+    assert f"Upgraded: {name}" in html_export.text
+    payload = exported.json()["run"]
+    assert payload["floors"][0]["cards_upgraded"] == ["CARD.ETERNAL_ARMOR"]
+    assert RunHistory(**payload) == run
+
+
+async def test_import_bounds_upgrade_lists(client):
+    from sts2.app import generate_csrf_token
+
+    run = RunHistory(id="u", character="Silent", win=True,
+                     floors=[RunFloor(floor=1, cards_upgraded=["CARD.BLUR"] * 101)])
+    response = await client.post(
+        "/runs/import",
+        files={"file": ("run.json", json.dumps({"format_version": 1, "run": run.model_dump()}).encode(),
+                        "application/json")},
+        data={"csrf_token": generate_csrf_token()},
+    )
+    assert response.status_code == 400
+    assert "unreasonable per-floor list sizes" in response.text
 
 
 def _run(i):

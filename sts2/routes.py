@@ -1209,6 +1209,7 @@ async def import_run(request: Request, file: UploadFile = File(...),
                 len(getattr(f, "potions_gained", []) or []) > 20 or
                 len(f.relics_gained) > 100 or
                 len(f.relics_removed) > 100 or
+                len(f.cards_upgraded) > 100 or
                 len(getattr(f, "cards_picked", []) or []) > 50):
             return a.templates.TemplateResponse(request, "error.html", {
                 "error_code": 400,

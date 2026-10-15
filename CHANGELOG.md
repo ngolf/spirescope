@@ -17,6 +17,8 @@
   purchases (including colorless cards), Ancient and event gifts were in the
   final deck but missing from the floor-by-floor view, timeline, exports and
   drift. Card pick rates still count only cards picked from that floor's offer.
+- Show card upgrades (Smith at rest sites, events) on the floor they happened,
+  in the floor-by-floor view, timeline tooltips, and JSON and HTML exports.
 
 ## v3.2.2
 

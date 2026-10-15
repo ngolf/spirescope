@@ -123,6 +123,10 @@ def _picked_card_ids(p_stats: dict) -> list[str]:
     return picked
 
 
+def _upgraded_card_ids(p_stats: dict) -> list[str]:
+    return [cid for cid in p_stats.get("upgraded_cards", []) if isinstance(cid, str) and cid]
+
+
 def _upgrade_level(card: dict) -> int | None:
     """Preserve an explicitly observed native level; missing is unavailable."""
     value = card.get("current_upgrade_level", card.get("upgrade_count"))
@@ -290,6 +294,7 @@ def _current_run_from_save(data: dict, player_index: int | None) -> CurrentRun:
                 cards_picked=cards_picked,
                 relics_gained=_gained_relic_ids(p_stats),
                 relics_removed=[rid for rid in p_stats.get("relics_removed", []) if rid],
+                cards_upgraded=_upgraded_card_ids(p_stats),
                 act=act_idx + 1,
             ))
 
@@ -557,6 +562,7 @@ def get_run_history() -> list[RunHistory]:
                         cards_picked=cards_picked,
                         relics_gained=_gained_relic_ids(p_stats),
                         relics_removed=[rid for rid in p_stats.get("relics_removed", []) if rid],
+                        cards_upgraded=_upgraded_card_ids(p_stats),
                         potions_used=[p for p in p_stats.get("potion_used", []) if p],
                         potions_gained=[p.get("choice", "") for p in p_stats.get("potion_choices", []) if p.get("was_picked") and p.get("choice")],
                         act=act_idx + 1,
