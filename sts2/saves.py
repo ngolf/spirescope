@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 
 from sts2.card_properties import read_card_properties
@@ -98,15 +99,28 @@ def _get_player_stats(player_stats: list[dict], player: dict) -> dict:
 
 
 def _picked_card_ids(p_stats: dict) -> list[str]:
-    """Every card taken on a floor, in save order.
+    """Every card added to the deck on a floor: reward picks first, in save order.
 
-    A floor can carry several was_picked choices (a shop lists each card
-    bought; some fights grant two rewards) — keeping only one lost the rest.
+    A floor can carry several was_picked choices (some fights grant two
+    rewards) — keeping only one lost the rest. Cards that never pass through a
+    choice screen (shop purchases incl. colorless, Ancient and event gifts)
+    appear only in cards_gained, which also repeats the picks; those are
+    appended once each so no copy is counted twice.
     """
-    return [
+    picked = [
         cid for cc in p_stats.get("card_choices", [])
         if cc.get("was_picked") and (cid := (cc.get("card") or {}).get("id", ""))
     ]
+    unclaimed = Counter(picked)
+    for card in p_stats.get("cards_gained", []):
+        cid = (card or {}).get("id", "") if isinstance(card, dict) else ""
+        if not cid:
+            continue
+        if unclaimed[cid] > 0:
+            unclaimed[cid] -= 1
+        else:
+            picked.append(cid)
+    return picked
 
 
 def _upgrade_level(card: dict) -> int | None:

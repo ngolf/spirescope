@@ -13,6 +13,10 @@
   on the run timeline, in floor-by-floor details and HTML exports, and alongside
   archetype drift. Drift also includes every card picked on a floor, rather than
   only the last; archetype classification remains card-based.
+- Show cards that never pass through a reward screen in run history: shop
+  purchases (including colorless cards), Ancient and event gifts were in the
+  final deck but missing from the floor-by-floor view, timeline, exports and
+  drift. Card pick rates still count only cards picked from that floor's offer.
 
 ## v3.2.2
 
