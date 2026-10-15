@@ -8,6 +8,11 @@
   `net_id` rather than `id`, so since v2.9.5 no floor matched and every floor
   showed no cards, HP or gold. The live view also lists every card taken on a
   floor, not just the last, and potions found and used.
+- Preserve relic acquisition and removal floors in run history, including shop
+  purchases without double-counting their reward entries. Show obtained relics
+  on the run timeline, in floor-by-floor details and HTML exports, and alongside
+  archetype drift. Drift also includes every card picked on a floor, rather than
+  only the last; archetype classification remains card-based.
 
 ## v3.2.2
 

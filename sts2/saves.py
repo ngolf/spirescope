@@ -115,6 +115,16 @@ def _upgrade_level(card: dict) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def _gained_relic_ids(p_stats: dict) -> list[str]:
+    """Merge rewards and purchases: native shops record both for the same relic."""
+    picked = [
+        rc["choice"] for rc in p_stats.get("relic_choices", [])
+        if rc.get("was_picked") and rc.get("choice")
+    ]
+    bought = [rid for rid in p_stats.get("bought_relics", []) if rid]
+    return list(dict.fromkeys(picked + bought))
+
+
 def _history_upgrade_levels(cards: list[dict]) -> list[int]:
     # The game writes current_upgrade_level only for upgraded copies: across
     # 106 real history files (2026-10-10), 3,736 deck entries carried no
@@ -264,6 +274,8 @@ def _current_run_from_save(data: dict, player_index: int | None) -> CurrentRun:
                 potions_used=[p for p in p_stats.get("potion_used", []) if p],
                 potions_gained=[p.get("choice", "") for p in p_stats.get("potion_choices", []) if p.get("was_picked") and p.get("choice")],
                 cards_picked=cards_picked,
+                relics_gained=_gained_relic_ids(p_stats),
+                relics_removed=[rid for rid in p_stats.get("relics_removed", []) if rid],
                 act=act_idx + 1,
             ))
 
@@ -529,6 +541,8 @@ def get_run_history() -> list[RunHistory]:
                         gold_observed="current_gold" in p_stats,
                         cards_offered=cards_offered,
                         cards_picked=cards_picked,
+                        relics_gained=_gained_relic_ids(p_stats),
+                        relics_removed=[rid for rid in p_stats.get("relics_removed", []) if rid],
                         potions_used=[p for p in p_stats.get("potion_used", []) if p],
                         potions_gained=[p.get("choice", "") for p in p_stats.get("potion_choices", []) if p.get("was_picked") and p.get("choice")],
                         act=act_idx + 1,

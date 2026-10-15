@@ -188,6 +188,8 @@ class RunFloor(BaseModel):
     card_picked: str = ""
     potions_used: list[str] = []
     potions_gained: list[str] = []
+    relics_gained: list[str] = []
+    relics_removed: list[str] = []
     # 1-based act from the save's per-act map_point_history grouping.
     # 0 = unknown (runs parsed or exported before this was recorded); analytics
     # then falls back to estimating the act from the floor number.
