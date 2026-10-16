@@ -43,6 +43,23 @@ def test_live_coop_save_keeps_each_players_stats_apart(tmp_path):
         assert get_current_run(1).floors[0].current_hp == 20
 
 
+def test_live_save_reads_gained_cards_relics_and_upgrades_by_net_id(tmp_path):
+    save = _live_save(
+        [{"net_id": 1, "deck": []}],
+        [{"player_id": 1,
+          "relic_choices": [{"choice": "RELIC.LAVA_ROCK", "was_picked": True}],
+          "bought_colorless": ["CARD.ETERNAL_ARMOR"],
+          "cards_gained": [{"id": "CARD.ETERNAL_ARMOR"}],
+          "upgraded_cards": ["CARD.BLUR"]}],
+    )
+    (tmp_path / "current_run.save").write_text(json.dumps(save), encoding="utf-8")
+    with patch("sts2.saves.SAVE_DIR", tmp_path):
+        floor = get_current_run().floors[0]
+    assert floor.relics_gained == ["RELIC.LAVA_ROCK"]
+    assert floor.cards_picked == ["CARD.ETERNAL_ARMOR"]
+    assert floor.cards_upgraded == ["CARD.BLUR"]
+
+
 async def test_live_floor_history_shows_every_card_and_potion(client):
     import sts2.app
 
@@ -50,6 +67,9 @@ async def test_live_floor_history_shows_every_card_and_potion(client):
                      deck=["CARD.BLUR"], floors=[RunFloor(
                          floor=1, type="monster", current_hp=50, max_hp=70,
                          cards_picked=["CARD.BLUR", "CARD.ETERNAL_ARMOR"],
+                         cards_upgraded=["CARD.BLUR"],
+                         relics_gained=["RELIC.LAVA_ROCK"],
+                         relics_removed=["RELIC.ANCHOR"],
                          potions_gained=["POTION.FIRE"],
                          potions_used=["POTION.BLOCK"],
                      )])
@@ -60,5 +80,8 @@ async def test_live_floor_history_shows_every_card_and_potion(client):
     history = resp.text.split("Floor History")[1]
     assert f"+ {name('CARD.BLUR')}" in history
     assert f"+ {name('CARD.ETERNAL_ARMOR')}" in history
+    assert f"Upgraded: {name('CARD.BLUR')}" in history
+    assert f"Relic obtained: {name('RELIC.LAVA_ROCK')}" in history
+    assert f"Relic removed: {name('RELIC.ANCHOR')}" in history
     assert f"Found {name('POTION.FIRE')}" in history
     assert f"Used {name('POTION.BLOCK')}" in history

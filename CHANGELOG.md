@@ -19,6 +19,8 @@
   drift. Card pick rates still count only cards picked from that floor's offer.
 - Show card upgrades (Smith at rest sites, events) on the floor they happened,
   in the floor-by-floor view, timeline tooltips, and JSON and HTML exports.
+- The live run floor history also shows card upgrades and relics obtained and
+  removed, and includes shop, Ancient and event cards, matching run history.
 
 ## v3.2.2
 
